@@ -23,7 +23,7 @@ def main():
     batch_size_train = args.batch_size_train
     batch_size_test = args.batch_size_test
     learning_rate = args.learning_rate
-    optimizer = optim.Adam(model.parameters(), lr=learning_rate)
+    optimizer = optim.Adam(model.parameters(), lr=learning_rate, weight_decay=0.2)
     scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, 5)
     train_loader = torch.utils.data.DataLoader(
         torchvision.datasets.MNIST('/files/', train=True, download=True,
@@ -49,7 +49,7 @@ def main():
     path = args.experiments_path
     experiment = Experiment(model, train_loader, torch.nn.CrossEntropyLoss(), optimizer, path, scheduler=scheduler,
                             data_preprocess_function=preprocess)
-    experiment.run()
+    experiment.run(delta_epochs_to_save_checkpoint=10)
 
 
 if __name__ == '__main__':

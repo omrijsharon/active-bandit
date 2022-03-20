@@ -1,4 +1,5 @@
 import torch
+import math
 
 
 def accuracy(output, target):
@@ -25,6 +26,6 @@ def grad_abs_mean(model):
     grad_abs_sum = 0
     num_param = 0
     for param in model.parameters():
-        grad_abs_sum += param.grad.abs().sum().item()
+        grad_abs_sum += (param.grad ** 2).sum().item()
         num_param += torch.prod(torch.tensor(param.grad.size())).item()
-    return grad_abs_sum / num_param
+    return math.sqrt(grad_abs_sum) / num_param

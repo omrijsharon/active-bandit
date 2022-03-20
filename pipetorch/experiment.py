@@ -3,13 +3,8 @@ import torch
 from torch.distributions import Categorical
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
-from datetime import datetime
 from pipetorch import callback_functions
-from time import sleep
-
-
-def start_tensorboard(experiment_path):
-    os.popen(r'tensorboard --logdir=' + experiment_path)
+from datetime import datetime, timedelta
 
 
 class Experiment(object):
@@ -26,8 +21,10 @@ class Experiment(object):
             os.mkdir(self.experiment_path)
         self.writer = SummaryWriter(self.experiment_path)
         self.data_preprocess_function = data_preprocess_function
+        self.t0 = datetime.now()
 
     def run_single_epoch(self):
+        self.epoch += 1
         self.model.train()
         self.optimizer.zero_grad(set_to_none=True)
         with tqdm(total=len(self.data_loader)) as pbar:
@@ -41,7 +38,8 @@ class Experiment(object):
                 loss.backward()
                 accuracy = callback_functions.accuracy(output, target).item()
                 recall, precision, f1_score = callback_functions.recall_precision_f1(output, target)
-                pbar.set_description("Epoch: {},  Loss: {:.3f},  Accuracy: {:.3f}".format(self.epoch, loss.item(), accuracy))
+                now = datetime.now()
+                pbar.set_description("{} @ Elapsed time: {} @ Epoch: {}, ".format(now.strftime("%d/%m/%Y, %H:%M:%S"), str(now-self.t0)[:-7], self.epoch))
                 pbar.update(1)
                 self.writer.add_scalar('Metric/Training loss', loss.item(), self.epoch * len(self.data_loader) + batch_idx)
                 self.writer.add_scalar('Metric/Model Entropy', Categorical(logits=output).entropy().mean().item(), self.epoch * len(self.data_loader) + batch_idx)
@@ -49,18 +47,19 @@ class Experiment(object):
                 self.writer.add_scalar('Metric/Recall', recall, self.epoch * len(self.data_loader) + batch_idx)
                 self.writer.add_scalar('Metric/Precision', precision, self.epoch * len(self.data_loader) + batch_idx)
                 self.writer.add_scalar('Metric/F1 Score', f1_score, self.epoch * len(self.data_loader) + batch_idx)
-                self.writer.add_scalar('Metric/Gradients mean', callback_functions.grad_abs_mean(self.model), self.epoch * len(self.data_loader) + batch_idx)
+                self.writer.add_scalar('Metric/Gradients mean length', callback_functions.grad_abs_mean(self.model), self.epoch * len(self.data_loader) + batch_idx)
 
                 self.optimizer.step()
                 self.optimizer.zero_grad(set_to_none=True)
             if self.scheduler is not None:
                 self.scheduler.step()
-        self.epoch += 1
 
-    def run(self):
+    def run(self, delta_epochs_to_save_checkpoint=100):
         os.popen(r'tensorboard --logdir=' + self.experiment_path)
         while True:
             self.run_single_epoch()
+            if self.epoch % delta_epochs_to_save_checkpoint == 0:
+                self.save()
 
     def eval(self, eval_data_loader):
         self.model.eval()
@@ -70,8 +69,11 @@ class Experiment(object):
                 self.writer.add_scalar('training loss', output.item(), self.epoch * len(self.data_loader) + batch_idx)
 
     def save(self):
-        torch.save(self.model.state_dict(), os.path.join(self.experiment_path, 'model.pth'))
-        torch.save(self.optimizer.state_dict(), 'optimizer.pth')
+        epoch_path = os.path.join(self.experiment_path, 'epoch_%06d' % self.epoch)
+        if not os.path.exists(epoch_path):
+            os.mkdir(epoch_path)
+        torch.save(self.model.state_dict(), os.path.join(epoch_path, 'model.pth'))
+        torch.save(self.optimizer.state_dict(), os.path.join(epoch_path, 'optimizer.pth'))
 
     def load(self, path):
         self.model.load_state_dict(torch.load(os.path.join(path, 'model.pth')))
