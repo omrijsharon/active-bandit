@@ -10,6 +10,7 @@ parser = argparse.ArgumentParser()
 parser.add_argument('--batch_size_train', type=int, default=5000, required=False, help="Batch size during training.")
 parser.add_argument('--batch_size_test', type=int, default=1, required=False, help="Batch size during testing.")
 parser.add_argument('--learning_rate', type=float, default=1e-3, required=False, help="Learning rate.")
+parser.add_argument('--weight_decay', type=float, default=0.2, required=False, help="Weight decay.")
 parser.add_argument('--experiments_path', type=str, default=r'C:\Users\omrijsharon\Documents\Experiments', required=False, help="Full path of the experiments directory for TensorBoard and Checkpoints.")
 
 
@@ -23,7 +24,8 @@ def main():
     batch_size_train = args.batch_size_train
     batch_size_test = args.batch_size_test
     learning_rate = args.learning_rate
-    optimizer = optim.Adam(model.parameters(), lr=learning_rate, weight_decay=0.2)
+    weight_decay = args.weight_decay
+    optimizer = optim.Adam(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
     scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, 5)
     train_loader = torch.utils.data.DataLoader(
         torchvision.datasets.MNIST('/files/', train=True, download=True,
