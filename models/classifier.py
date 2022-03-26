@@ -9,10 +9,13 @@ from utils.helper_functions import bw2rgb_expand_channels, resize_dataset
 import argparse
 
 
-def get_classifier(checkpoint_path=None):
+def get_classifier(model_name=None, checkpoint_path=None):
     classifier = nn.Sequential(torchvision.models.mobilenet_v3_large(False), nn.Linear(1000, 10))
-    if checkpoint_path is not None:
-        classifier.load_state_dict(torch.load(os.path.join(checkpoint_path, 'model.pth')))
+    filename = 'model.pth'
+    if not model_name:
+        filename = 'model_{}.pth'.format(model_name)
+    if not checkpoint_path:
+        classifier.load_state_dict(torch.load(os.path.join(checkpoint_path, filename)))
     return classifier
 
 

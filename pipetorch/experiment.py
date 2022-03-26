@@ -30,6 +30,7 @@ class Experiment(object):
             os.mkdir(os.path.join(self.experiment_path, "eval"))
         self.train_writer = SummaryWriter(os.path.join(self.experiment_path, "train"))
         self.eval_writer = SummaryWriter(os.path.join(self.experiment_path, "eval"))
+        print("Experiment dir: {}".format(self.experiment_path))
         self.data_preprocess_function = data_preprocess_function
         self.t0 = datetime.now()
 
@@ -43,11 +44,12 @@ class Experiment(object):
             writer.add_scalar('Metric/Recall', recall, self.epoch * dataloader_length + batch_idx)
             writer.add_scalar('Metric/Precision', precision, self.epoch * dataloader_length + batch_idx)
             writer.add_scalar('Metric/F1 Score', f1_score, self.epoch * dataloader_length + batch_idx)
-        writer.add_scalar('Metric/Gradients mean length', callback_functions.grad_abs_mean(self.model), self.epoch * dataloader_length + batch_idx)
+        # writer.add_scalar('Metric/Gradients mean length', callback_functions.grad_abs_mean(list(self.models.values())[0]), self.epoch * dataloader_length + batch_idx)
 
     def update_tqdm(self, pbar):
         now = datetime.now()
-        pbar.set_description("{} @ Elapsed time: {} @ Epoch: {}, Train".format(now.strftime("%d/%m/%Y, %H:%M:%S"), str(now - self.t0)[:-7], self.epoch))
+        free_gpu_mem = (torch.cuda.mem_get_info(device="cuda:0")[1] - torch.cuda.mem_get_info(device="cuda:0")[0]) * 1e-6
+        pbar.set_description("{} @ Elapsed time: {} @ Epoch: {}, Free GPU memory: {} MB, Train".format(now.strftime("%d/%m/%Y, %H:%M:%S"), str(now - self.t0)[:-7], self.epoch, int(free_gpu_mem)))
         pbar.update(1)
 
     def run_single_epoch(self):
@@ -81,7 +83,7 @@ class Experiment(object):
                 self.save()
 
     def eval(self):
-        {model.eval() for model in self.models.values()}
+        # {model.eval() for model in self.models.values()}
         loss_fn_each = torch.nn.CrossEntropyLoss(reduction='none')
         data_loader = self.train_data_loader
         dataloader_length = len(data_loader)
@@ -94,7 +96,7 @@ class Experiment(object):
                     if self.mode == "classifier":
                         self.loss_each = loss_fn_each(output, target)
                         self.entropy_each = Categorical(logits=output).entropy()
-                        if batch_idx==0:
+                        if batch_idx==0 and self.epoch > 0:
                             drawnow(self.make_fig)
                     self.write2tensorboard(self.eval_writer, output, target, batch_idx, loss, dataloader_length)
                     self.update_tqdm(pbar)
@@ -116,7 +118,7 @@ class Experiment(object):
         entropy_np = self.entropy_each.cpu().detach().numpy()
         loss_np = self.loss_each.cpu().detach().numpy()
         n_bins = 50
-        bins = np.linspace(0, entropy_np.max(), n_bins)
+        bins = np.linspace(entropy_np.min(), entropy_np.max(), n_bins)
         idx = np.digitize(entropy_np, bins=bins)
         loss_mean = []
         loss_std = []
@@ -138,7 +140,4 @@ class Experiment(object):
         plt.errorbar(np.array(entropy_axis), loss_mean, yerr=[lower_error, upper_error], linestyle='None', marker='o', alpha=0.8, zorder=3)
         plt.ylabel('Cross-Entropy Loss')
         plt.xlabel('Entropy')
-        epoch_path = os.path.join(self.experiment_path, 'epoch_%06d' % self.epoch)
-        if not os.path.exists(epoch_path):
-            os.mkdir(epoch_path)
-        plt.savefig(os.path.join(epoch_path, "loss_vs_entropy_epoch_{}.png".format(self.epoch)))
+        plt.savefig(os.path.join(self.experiment_path, "loss_vs_entropy_epoch_{}.png".format(self.epoch)))

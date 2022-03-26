@@ -49,7 +49,7 @@ class SelfEncoder(nn.Module):
 class Encoder(nn.Module):
     def __init__(self, checkpoint_path):
         super(Encoder, self).__init__()
-        classifier = get_classifier(checkpoint_path)
+        classifier = get_classifier(model_name="classifier", checkpoint_path=checkpoint_path)
         self.model = torchvision.models.mobilenet_v3_large(False)
         classifier_params = [param for param in classifier.parameters()]
         for i, param in enumerate(self.model.parameters()):
@@ -73,7 +73,7 @@ class Decoder(nn.Module):
         self.layers.extend([nn.ConvTranspose2d(32, 32, kernel_size=(3, 3)), nn.BatchNorm2d(32), activation_func()])
         self.layers.extend([nn.ConvTranspose2d(32, 16, kernel_size=(3, 3)), nn.BatchNorm2d(16), activation_func()])
         self.layers.extend([nn.ConvTranspose2d(16, 16, kernel_size=(3, 3)), nn.BatchNorm2d(16), activation_func()])
-        self.layers.extend([nn.Conv2d(16, output_channels, kernel_size=(3, 3)), nn.BatchNorm2d(1), nn.Tanh()])
+        self.layers.extend([nn.Conv2d(16, output_channels, kernel_size=(3, 3)), nn.Identity(), nn.Tanh()])
 
     def forward(self, x):
         for i in range(int(len(self.layers)/3)):
@@ -92,7 +92,7 @@ def loss_calc_func(models, data, target, loss_functions, data_preprocess_functio
     output = models["decoder"](latent_data)
     with torch.no_grad():
         latent_output = models["encoder"](output)
-    loss_cosim = -loss_functions["CosineSimilarity"](output, data)
+    loss_cosim = -loss_functions["CosineSimilarity"](output, data).mean()
     loss_l2 = loss_functions["MSE"](latent_output, latent_data)
     p = 0.8
     loss = p * loss_cosim + (1 - p) * loss_l2
@@ -100,13 +100,13 @@ def loss_calc_func(models, data, target, loss_functions, data_preprocess_functio
 
 
 def train_encoder(args):
-    ckpt = r'C:\Users\omrijsharon\Documents\Experiments\2022_03_22-09_36_31\epoch_000040'
+    ckpt = r'C:\Users\omrijsharon\Documents\Experiments\full_classifier_2022_03_26-13_51_11\epoch_000100'
     model = {"encoder": Encoder(checkpoint_path=ckpt), "decoder": Decoder(input_size=1000, output_channels=3, activation_func=nn.Mish)}
     loss_functions = {"CosineSimilarity": nn.CosineSimilarity(), "MSE": nn.MSELoss()}
     batch_size = args.batch_size
     learning_rate = args.learning_rate
     weight_decay = args.weight_decay
-    optimizer = optim.Adam(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
+    optimizer = optim.Adam(model["decoder"].parameters(), lr=learning_rate, weight_decay=weight_decay)
     scheduler = optim.lr_scheduler.ExponentialLR(optimizer, gamma=0.99)
     entire_train_dataset = torchvision.datasets.MNIST('/files/', train=True, download=True,
                                                       transform=torchvision.transforms.Compose([
