@@ -9,7 +9,17 @@ import matplotlib.pyplot as plt
 from utils.helper_functions import resize_dataset_and_pad, embed, SoftABS
 from models.classifier import get_classifier
 from PIL import Image
-from utils.helper_functions import bw2rgb_expand_channels
+from utils.helper_functions import bw2rgb_expand_channels, SoftABS, dataset2split_loaders
+
+
+class WatermarkEncoder(nn.Module):
+    def __init__(self):
+        super(WatermarkEncoder, self).__init__()
+        self.w = nn.Parameter(torch.randn(1))
+        self.bias = nn.Parameter(torch.randn(1))
+
+    def forward(self, img, watermark):
+        return img + self.w * watermark + self.bias
 
 
 class SelfEncoder(nn.Module):
@@ -84,29 +94,58 @@ class Decoder(nn.Module):
         return x
 
 
+def get_decoder(model_name=None, checkpoint_path=None, input_size=1000, output_channels=3, activation_func=nn.Mish):
+    decoder = Decoder(input_size, output_channels, activation_func)
+    filename = 'model.pth'
+    if not model_name is None:
+        filename = 'model_{}.pth'.format(model_name)
+    if not checkpoint_path is None:
+        decoder.load_state_dict(torch.load(os.path.join(checkpoint_path, filename)))
+    return decoder
+
+
+# def loss_calc_func(models, data, target, loss_functions, data_preprocess_function):
+#     if data_preprocess_function is not None:
+#         data = data_preprocess_function(data)
+#     with torch.no_grad():
+#         latent_data = models["encoder"](data)
+#     output = models["decoder"](latent_data)
+#     with torch.no_grad():
+#         latent_output = models["encoder"](output)
+#     loss_softabs = loss_functions["SoftABS"](output, data)
+#     loss_l2 = loss_functions["MSE"](latent_output, latent_data) / torch.sqrt(torch.tensor(output.size(1)))
+#     p = 0.9
+#     loss = p * loss_softabs + (1 - p) * loss_l2
+#     return loss, output
+
 def loss_calc_func(models, data, target, loss_functions, data_preprocess_function):
     if data_preprocess_function is not None:
         data = data_preprocess_function(data)
     with torch.no_grad():
-        latent_data = models["encoder"](data)
-    output = models["decoder"](latent_data)
+        gt = models["classifier"](data)
+    output = models["watermark_encoder"](data)
     with torch.no_grad():
         latent_output = models["encoder"](output)
-    loss_cosim = -loss_functions["CosineSimilarity"](output, data).mean()
-    loss_l2 = loss_functions["MSE"](latent_output, latent_data)
-    p = 0.8
-    loss = p * loss_cosim + (1 - p) * loss_l2
+    loss = loss_functions["SoftABS"](output, data)
     return loss, output
 
 
 def train_encoder(args):
-    ckpt = r'C:\Users\omrijsharon\Documents\Experiments\full_classifier_2022_03_26-13_51_11\epoch_000100'
-    model = {"encoder": Encoder(checkpoint_path=ckpt), "decoder": Decoder(input_size=1000, output_channels=3, activation_func=nn.Mish)}
-    loss_functions = {"CosineSimilarity": nn.CosineSimilarity(), "MSE": nn.MSELoss()}
-    batch_size = args.batch_size
-    learning_rate = args.learning_rate
-    weight_decay = args.weight_decay
-    optimizer = optim.Adam(model["decoder"].parameters(), lr=learning_rate, weight_decay=weight_decay)
+    # encoder_ckpt = r'C:\Users\omrijsharon\Documents\Experiments\full_classifier_2022_03_26-13_51_11\epoch_000100'
+    # # decoder_ckpt = r'C:\Users\omrijsharon\Documents\Experiments\autoencoder_2022_03_26-16_36_32\epoch_000230'
+    # decoder_ckpt = None
+    # model = {
+    #     "encoder": Encoder(checkpoint_path=encoder_ckpt),
+    #     "decoder": get_decoder(model_name="decoder", checkpoint_path=decoder_ckpt, input_size=1000, output_channels=3, activation_func=nn.Mish)
+    # }
+    classifier_ckpt = r'C:\Users\omrijsharon\Documents\Experiments\full_classifier_2022_03_26-13_51_11\epoch_000100'
+    model = {
+        "classifier": get_classifier("classifier", checkpoint_path=classifier_ckpt),
+        "watermark_encoder": WatermarkEncoder(),
+        "watermark_classifier": get_classifier()
+    }
+    loss_functions = {"SoftABS": SoftABS(), "MSE": nn.MSELoss()}
+    optimizer = optim.Adam(model["watermark_encoder"].parameters(), lr=args.learning_rate, weight_decay=args.weight_decay)
     scheduler = optim.lr_scheduler.ExponentialLR(optimizer, gamma=0.99)
     entire_train_dataset = torchvision.datasets.MNIST('/files/', train=True, download=True,
                                                       transform=torchvision.transforms.Compose([
@@ -114,19 +153,24 @@ def train_encoder(args):
                                                           torchvision.transforms.Normalize(
                                                               (0.1307,), (0.3081,))
                                                       ]))
-    # resized_dataset = resize_dataset_and_pad(entire_train_dataset, small_dim=(7, 7), large_dim=(28, 28))
+    resized_dataset = resize_dataset_and_pad(entire_train_dataset, small_dim=(7, 7), large_dim=(28, 28))
     # embedded_data = embed(entire_train_dataset.data, resized_dataset.data)
     # entire_train_dataset.data = embedded_data
-    split_dataset = data.random_split(entire_train_dataset, [int(0.8 * len(entire_train_dataset)), int(0.2 * len(entire_train_dataset))])
-    train_set = split_dataset[0]
-    validation_set = split_dataset[1]
-    train_loader = torch.utils.data.DataLoader(train_set, batch_size=batch_size, shuffle=True)
-    validation_loader = torch.utils.data.DataLoader(validation_set, batch_size=batch_size, shuffle=True)
+    split = [0.8, 0.2]
+    train_loader, validation_loader, split = dataset2split_loaders(entire_train_dataset, args.batch_size, split)
+
+    train_loader_watermark, validation_loader_watermark, split_watermark = dataset2split_loaders(resized_dataset, args.batch_size, p=0.8)
+
+
+
+    data_loaders = {
+        "train": zip(train_loader, train_loader_watermark), "eval": zip(validation_loader, validation_loader_watermark)
+    }
     path = args.experiments_path
     model_name = "autoencoder"
     experiment = Experiment(model_name, model,
-                            train_loader, validation_loader,
+                            data_loaders,
                             loss_functions, loss_calc_func,
                             optimizer, path, scheduler=scheduler,
-                            data_preprocess_function=None, mode='regression')
+                            data_preprocess_function=None, mode='decoder')
     experiment.run(delta_epochs_to_save_checkpoint=10)

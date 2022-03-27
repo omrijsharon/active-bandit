@@ -1,6 +1,8 @@
+import numpy as np
 import cv2
 import torch
 import torchvision
+from torch.utils import data
 from copy import deepcopy
 from tqdm import tqdm
 
@@ -62,6 +64,16 @@ class SoftABS(torch.nn.Module):
 
     def forward(self, output, target):
         return torch.log(torch.cosh(output - target)).mean()
+
+
+def dataset2split_loaders(dataset, batch_size, split=None):
+    if split is None:
+        split = [0.8, 0.2]
+    assert np.array(split).sum() == 1, "split sum must be equal to 1."
+    split = [int(np.round(i * len(dataset))) for i in split]
+    splitted_datasets = data.random_split(dataset, split)
+    split_dataloader = [data.DataLoader(splitted_dataset, batch_size=batch_size, shuffle=True) for splitted_dataset in splitted_datasets]
+    return split_dataloader, split
 
 
 if __name__ == '__main__':
