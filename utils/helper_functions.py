@@ -69,11 +69,56 @@ class SoftABS(torch.nn.Module):
 def dataset2split_loaders(dataset, batch_size, split=None):
     if split is None:
         split = [0.8, 0.2]
-    assert np.array(split).sum() == 1, "split sum must be equal to 1."
-    split = [int(np.round(i * len(dataset))) for i in split]
-    splitted_datasets = data.random_split(dataset, split)
-    split_dataloader = [data.DataLoader(splitted_dataset, batch_size=batch_size, shuffle=True) for splitted_dataset in splitted_datasets]
-    return split_dataloader, split
+    if np.array(split).sum() == 1:
+        split = [int(np.round(i * len(dataset))) for i in split]
+    elif np.array(split).dtype == np.dtype('int32') and np.array(split).sum() == len(entire_train_dataset):
+        pass
+    else:
+        raise ValueError("split must be a list that sums to 1 or a list of integers that sums up to the length of the dataset.")
+
+    split_datasets = data.random_split(dataset, split)
+    split_dataloader = [data.DataLoader(dataset, batch_size=batch_size, shuffle=True) for dataset in split_datasets]
+    return split_dataloader, split_datasets, split
+
+
+class Oracle(object):
+    def __init__(self, entire_dataset):
+        self.remaining_dataset = entire_dataset
+        self.partial_dataset = None
+
+    def random_query(self, n_queries):
+        assert n_queries < len(self.remaining_dataset), "n_queries is larger than the remaining dataset."
+        new_dataset, self.remaining_dataset = data.random_split(self.remaining_dataset, [n_queries, len(self.remaining_dataset)-n_queries])
+        self.concat_to_partial_dataset(new_dataset)
+
+    def query(self, indices):
+        new_data = torch.utils.data.Subset(self.remaining_dataset, indices)
+        mask = np.ones(len(self.remaining_dataset), dtype=bool)
+        mask[indices] = False
+        self.remaining_dataset = self.remaining_dataset[mask]
+        self.concat_to_partial_dataset(new_data)
+
+    def concat_to_partial_dataset(self, new_dataset):
+        if self.partial_dataset is None:
+            self.partial_dataset = new_dataset
+        else:
+            self.partial_dataset = torch.utils.data.ConcatDataset((self.partial_dataset, new_dataset))
+
+
+def weighted_loss(n_classes, target, loss_each, reduction='mean'):
+    classes, counts = torch.unique(target, return_counts=True)
+    assert len(classes) == n_classes, "there are {} classes in the target tensor but {} classes in the dataset.".format(len(classes), n_classes)
+    classes_weights = counts.sum()/(n_classes * counts)
+    for c, w in zip(classes, classes_weights):
+        loss_each[target == c] = loss_each[target==c] * w
+    if reduction.lower() == "mean":
+        return loss_each.mean()
+    elif reduction.lower() == "none":
+        return loss_each
+    elif reduction.lower() == "sum":
+        return loss_each.sum()
+    else:
+        raise ValueError("reduction {} is not supported. Only mean, sum and none".format(reduction))
 
 
 if __name__ == '__main__':

@@ -2,6 +2,9 @@ from pipetorch.experiment import Experiment
 import os
 import torch
 from torch import nn
+from torch.nn import functional as F
+from torch.distributions import Categorical
+
 from torch.utils import data
 import torchvision
 import torch.optim as optim
@@ -10,6 +13,26 @@ import argparse
 import numpy as np
 from scipy.stats import binned_statistic
 import matplotlib.pyplot as plt
+
+
+class Classifier(nn.Module):
+    def __init__(self, base_model, n_labels, is_temp=False):
+        super(Classifier, self).__init__()
+        last_layer_len = len([param for param in base_model.parameters()][-1])
+        self.modules = nn.ModuleDict({"base_model": base_model})
+        self.modules.update({"predictions": nn.Linear(last_layer_len, n_labels)})
+        self.is_temp = is_temp
+        if is_temp:
+            self.modules.update({"inv_temperature": nn.Linear(last_layer_len, 1)})
+
+    def forward(self, x):
+        x = self.modules["base_model"](x)
+        y = self.modules["predictions"](x)
+        if self.is_temp:
+            beta = F.softplus(self.modules["inv_temperature"](x))
+            return beta * y, beta
+        else:
+            return y, torch.ones()
 
 
 def get_classifier(model_name=None, checkpoint_path=None):
@@ -49,7 +72,8 @@ def train_classifier(args):
         entire_train_dataset = resize_dataset(entire_train_dataset, dim=(7,7))
         name = "small_classifier"
     split = [0.6, 0.4]
-    data_loaders, split = dataset2split_loaders(entire_train_dataset, args.batch_size, split)
+    # data.random_split(entire_train_dataset, split)
+    data_loaders, split_datasets, split = dataset2split_loaders(entire_train_dataset, args.batch_size, split)
     train_loader = data_loaders[0]
     validation_loader = data_loaders[1]
     """
@@ -65,10 +89,19 @@ def train_classifier(args):
     path = args.experiments_path
     experiment = Experiment(name, models,
                             data_loaders,
-                            {"CrossEntropy": torch.nn.CrossEntropyLoss()}, loss_calc_func,
+                            {"CrossEntropy": torch.nn.CrossEntropyLoss}, loss_calc_func,
                             optimizer, path, scheduler=scheduler,
                             data_preprocess_function=bw2rgb_expand_channels)
-    mean, std, entropy_mean, entropy_std, losses_mean, losses_std = experiment.dataset_calc(data_loaders["train"],n_labels=10)
+    experiment.run(delta_epochs_to_save_checkpoint=10)
+    outputs, mean, std, entropy_mean, entropy_std, losses_mean, losses_std = experiment.dataset_calc(data_loaders["train"],n_labels=10, n_runs=20)
+    entropy_each = Categorical(logits=outputs).entropy()
+    entropy_mean = Categorical(logits=outputs.mean(dim=1)).entropy()
+    entropy_diff = entropy_each - entropy_mean.unsqueeze(1)
+    score = entropy_mean * entropy_std ** 2
+    top_k = 100
+    indices = torch.topk(score, top_k).indices
+    new_dataset = torch.utils.data.Subset(split_datasets[0], indices)
+
     entropy_mean_np = entropy_mean.numpy()
     entropy_std_np = entropy_std.numpy()
     losses_mean_np = losses_mean.numpy()

@@ -8,34 +8,46 @@ from pipetorch import callback_functions
 from datetime import datetime, timedelta
 import matplotlib.pyplot as plt
 from drawnow import drawnow
+from utils.helper_functions import weighted_loss
 from time import sleep
 
 
 class Experiment(object):
-    def __init__(self, name: str, models: dict, data_loaders, loss_functions: dict, loss_calc_func, optimizer, experiments_path, scheduler=None, data_preprocess_function=None, mode="classifier"):
+    def __init__(self, name: str,
+                 models: dict,
+                 data_loaders,
+                 loss_classes: dict,
+                 loss_calc_func,
+                 optimizer,
+                 experiments_path,
+                 scheduler=None,
+                 data_preprocess_function=None,
+                 phases=None,
+                 mode="classifier"):
         self.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
         self.name = name
         self.models = {k: model.to(self.device) for k, model in models.items()}
         self.data_loaders = data_loaders
         self.batch_size = {k: data_loader.batch_size for k, data_loader in self.data_loaders.items()}
-        self.loss_functions = loss_functions
+        self.loss_functions = {k: v(reduction='none') for k, v in loss_classes.items()}
         self.loss_calc_func = loss_calc_func
         self.optimizer = optimizer
         self.scheduler = scheduler
         self.mode = mode
         self.epoch = 0
         self.experiment_path = os.path.join(experiments_path, self.name + "_" + datetime.now().strftime("%Y_%m_%d-%H_%M_%S"))
+        if phases is None:
+            phases = ["train", "eval"]
         if not os.path.exists(self.experiment_path):
             os.mkdir(self.experiment_path)
-            os.mkdir(os.path.join(self.experiment_path, "train"))
-            os.mkdir(os.path.join(self.experiment_path, "eval"))
-        self.train_writer = SummaryWriter(os.path.join(self.experiment_path, "train"))
-        self.eval_writer = SummaryWriter(os.path.join(self.experiment_path, "eval"))
+            for phase in phases:
+                os.mkdir(os.path.join(self.experiment_path, phase))
+        self.writers = {phase: SummaryWriter(os.path.join(self.experiment_path, phase)) for phase in phases}
         print("Experiment dir: {}".format(self.experiment_path))
         self.data_preprocess_function = data_preprocess_function
         self.t0 = datetime.now()
 
-    def write2tensorboard(self, writer, output, target, batch_idx, loss, index):
+    def write2tensorboard(self, writer, output, target, loss, index):
         writer.add_scalar('Metric/Loss', loss.item(), index)
         if self.mode == "classifier":
             accuracy = callback_functions.accuracy(output, target).item()
@@ -59,12 +71,14 @@ class Experiment(object):
     def calc_idx(epoch, dataset_length, batch_idx, batch_size):
         return epoch * dataset_length + batch_idx * batch_size
 
-    def dataset_calc(self, data_loader, n_labels):
+    @staticmethod
+    def calc_batch_idx(epoch, batches_in_epoch, batch_idx):
+        return epoch * batches_in_epoch + batch_idx
+
+    def dataset_calc(self, data_loader, n_labels, n_runs=20):
         {model.train() for model in self.models.values()}
-        loss_fn_each = {"CrossEntropy": torch.nn.CrossEntropyLoss(reduction='none')}
         dataset_length = len(data_loader.dataset.indices)
         dataloader_length = len(data_loader)
-        n_runs = 10
         entropy_mean = torch.zeros(size=(dataset_length,))
         entropy_std = torch.zeros(size=(dataset_length,))
         losses_mean = torch.zeros(size=(dataset_length,))
@@ -80,7 +94,8 @@ class Experiment(object):
                     losses_temp = torch.zeros(size=(batch_size, n_runs)).to(self.device)
                     outputs_temp = torch.zeros(size=(batch_size, n_runs, n_labels)).to(self.device)
                     for i in range(n_runs):
-                        loss, output = self.loss_calc_func(self.models, data, target, loss_fn_each, self.data_preprocess_function)
+                        loss, output = self.loss_calc_func(self.models, data, target, self.loss_functions, self.data_preprocess_function)
+                        loss = weighted_loss(len(data_loader.dataset.dataset.classes), target, loss, reduction='none')
                         entropy_temp[:, i] = Categorical(logits=output).entropy()
                         losses_temp[:, i] = loss
                         outputs_temp[:, i, :] = output
@@ -94,68 +109,48 @@ class Experiment(object):
                     self.update_tqdm(pbar, text="Dataset")
                 mean = outputs.mean(dim=1)
                 std = outputs.std(dim=1)
-        return mean, std, entropy_mean, entropy_std, losses_mean, losses_std
+        return outputs, mean, std, entropy_mean, entropy_std, losses_mean, losses_std
 
-    def run_single_epoch(self):
+    def run_single_epoch(self, phase: str):
+        assert phase in self.writers.keys(), "Expected one of the phases: {}, but got phase: {}.".format(self.writers.keys(), phase)
         self.epoch += 1
-        key = "train"
-        data_loader = self.data_loaders[key]
+        data_loader = self.data_loaders[phase]
         dataset_length = len(data_loader.dataset.indices)
         {model.train() for model in self.models.values()}
-        self.optimizer.zero_grad(set_to_none=True)
+        if phase.lower() == "train":
+            self.optimizer.zero_grad(set_to_none=True)
         with tqdm(total=len(data_loader)) as pbar:
             for batch_idx, (data, target) in enumerate(data_loader):
                 data = data.to(self.device)
                 target = target.to(self.device)
                 batch_size = len(data)
                 loss, output = self.loss_calc_func(self.models, data, target, self.loss_functions, self.data_preprocess_function)
-                loss.backward()
+                loss = weighted_loss(len(data_loader.dataset.dataset.classes), target, loss)
+                if phase.lower() == "train":
+                    loss.backward()
+                    # optimizer updates weights
+                    self.optimizer.step()
+                    self.optimizer.zero_grad(set_to_none=True)
+                idx = self.calc_batch_idx(self.epoch, len(data_loader.batch_sampler), batch_idx)
+                self.write2tensorboard(self.writers[phase], output, target, loss, idx)
+                self.update_tqdm(pbar, text=phase)
 
-                idx = self.calc_idx(self.epoch, dataset_length, batch_size, batch_idx)
-                self.write2tensorboard(self.train_writer, output, target, batch_idx, loss, idx)
-                self.update_tqdm(pbar, text="Train")
-
-                # optimizer updates weights
-                self.optimizer.step()
-                self.optimizer.zero_grad(set_to_none=True)
-            if self.scheduler is not None:
-                self.scheduler.step()
+            if phase.lower() == "train":
+                if self.scheduler is not None:
+                    self.scheduler.step()
 
     def run(self, delta_epochs_to_save_checkpoint=100):
         os.popen(r'tensorboard --logdir=' + self.experiment_path)
         while True:
-            self.run_single_epoch()
+            self.run_single_epoch(phase="train")
             self.eval()
             if self.epoch % delta_epochs_to_save_checkpoint == 0:
                 self.save()
 
+    @torch.no_grad()
     def eval(self):
         # {model.eval() for model in self.models.values()}
-        loss_fn_each = torch.nn.CrossEntropyLoss(reduction='none')
-        key = "eval"
-        data_loader = self.data_loaders[key]
-        dataset_length = len(data_loader.dataset.indices)
-        with torch.no_grad():
-            with tqdm(total=len(data_loader)) as pbar:
-                for batch_idx, (data, target) in enumerate(self.eval_data_loader):
-                    data = data.to(self.device)
-                    target = target.to(self.device)
-                    batch_size = len(data)
-                    loss, output = self.loss_calc_func(self.models, data, target, self.loss_functions, self.data_preprocess_function)
-                    if self.mode == "classifier":
-                        self.loss_each = loss_fn_each(output, target)
-                        self.entropy_each = Categorical(logits=output).entropy()
-                        if batch_idx==0 and self.epoch > 0:
-                            drawnow(self.make_fig)
-                    elif self.mode == "decoder":
-                        if batch_idx==0 and self.epoch > 0:
-                            self.idx = torch.randperm(8)
-                            self.output = output[self.idx]
-                            self.data = data
-                            drawnow(self.make_fig)
-                    idx = self.calc_idx(self.epoch, dataset_length, batch_size, batch_idx)
-                    self.write2tensorboard(self.eval_writer, output, target, batch_idx, loss, idx)
-                    self.update_tqdm(pbar, text="Eval")
+        self.run_single_epoch(phase="eval")
 
     def save(self):
         epoch_path = os.path.join(self.experiment_path, 'epoch_%06d' % self.epoch)
