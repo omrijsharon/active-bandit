@@ -26,8 +26,8 @@ class Classifier(nn.Module):
             self.modules.update({"inv_temperature": nn.Linear(last_layer_len, 1)})
 
     def forward(self, x):
-        x = self.modules["base_model"](x)
-        y = self.modules["predictions"](x)
+        features = self.modules["base_model"](x)
+        y = self.modules["predictions"](features)
         if self.is_temp:
             beta = F.softplus(self.modules["inv_temperature"](x))
             return beta * y, beta
@@ -37,6 +37,7 @@ class Classifier(nn.Module):
 
 def get_classifier(model_name=None, checkpoint_path=None):
     classifier = nn.Sequential(torchvision.models.mobilenet_v3_large(False), nn.Linear(1000, 10))
+    # classifier = Classifier(base_model=torchvision.models.mobilenet_v3_large(False), n_labels=10, is_temp=True)
     filename = 'model.pth'
     if not model_name is None:
         filename = 'model_{}.pth'.format(model_name)
@@ -71,11 +72,11 @@ def train_classifier(args):
     if args.watermark:
         entire_train_dataset = resize_dataset(entire_train_dataset, dim=(7,7))
         name = "small_classifier"
-    split = [0.6, 0.4]
-    # data.random_split(entire_train_dataset, split)
-    data_loaders, split_datasets, split = dataset2split_loaders(entire_train_dataset, args.batch_size, split)
-    train_loader = data_loaders[0]
-    validation_loader = data_loaders[1]
+    # split = [0.1, 0.2, 0.7]
+    # # data.random_split(entire_train_dataset, split)
+    # data_loaders, split_datasets, split = dataset2split_loaders(entire_train_dataset, args.batch_size, split)
+    # train_loader = data_loaders[0]
+    # validation_loader = data_loaders[1]
     """
     test_dataset = torchvision.datasets.MNIST('/files/', train=False, download=True,
                                               transform=torchvision.transforms.Compose([
@@ -85,14 +86,13 @@ def train_classifier(args):
                                                   ]))
     test_loader = torch.utils.data.DataLoader(test_dataset, batch_size=batch_size, shuffle=True)
     """
-    data_loaders = {"train": train_loader, "eval": validation_loader}
-    path = args.experiments_path
+    # data_loaders = {"train": train_loader, "eval": validation_loader}
     experiment = Experiment(name, models,
-                            data_loaders,
+                            entire_train_dataset, args.batch_size,
                             {"CrossEntropy": torch.nn.CrossEntropyLoss}, loss_calc_func,
-                            optimizer, path, scheduler=scheduler,
+                            optimizer, args.experiments_path, scheduler=scheduler,
                             data_preprocess_function=bw2rgb_expand_channels)
-    experiment.run(delta_epochs_to_save_checkpoint=10)
+    experiment.run(delta_epochs_to_save_checkpoint=50)
     outputs, mean, std, entropy_mean, entropy_std, losses_mean, losses_std = experiment.dataset_calc(data_loaders["train"],n_labels=10, n_runs=20)
     entropy_each = Categorical(logits=outputs).entropy()
     entropy_mean = Categorical(logits=outputs.mean(dim=1)).entropy()

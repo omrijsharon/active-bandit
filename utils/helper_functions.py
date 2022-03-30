@@ -77,8 +77,8 @@ def dataset2split_loaders(dataset, batch_size, split=None):
         raise ValueError("split must be a list that sums to 1 or a list of integers that sums up to the length of the dataset.")
 
     split_datasets = data.random_split(dataset, split)
-    split_dataloader = [data.DataLoader(dataset, batch_size=batch_size, shuffle=True) for dataset in split_datasets]
-    return split_dataloader, split_datasets, split
+    split_dataloaders = [data.DataLoader(dataset, batch_size=batch_size, shuffle=True) for dataset in split_datasets]
+    return split_dataloaders, split_datasets, split
 
 
 class Oracle(object):
@@ -89,20 +89,29 @@ class Oracle(object):
     def random_query(self, n_queries):
         assert n_queries < len(self.remaining_dataset), "n_queries is larger than the remaining dataset."
         new_dataset, self.remaining_dataset = data.random_split(self.remaining_dataset, [n_queries, len(self.remaining_dataset)-n_queries])
-        self.concat_to_partial_dataset(new_dataset)
+        self.__concat_to_partial_dataset(new_dataset)
+        return self.partial_dataset
 
     def query(self, indices):
         new_data = torch.utils.data.Subset(self.remaining_dataset, indices)
         mask = np.ones(len(self.remaining_dataset), dtype=bool)
         mask[indices] = False
-        self.remaining_dataset = self.remaining_dataset[mask]
-        self.concat_to_partial_dataset(new_data)
+        self.remaining_dataset = data.Subset(self.remaining_dataset, *mask.nonzero())
+        self.__concat_to_partial_dataset(new_data)
+        return self.partial_dataset
 
-    def concat_to_partial_dataset(self, new_dataset):
+    @staticmethod
+    def to_dataloader(dataset, batch_size):
+        return data.DataLoader(dataset, batch_size=batch_size, shuffle=True)
+
+    def __concat_to_partial_dataset(self, new_dataset):
         if self.partial_dataset is None:
             self.partial_dataset = new_dataset
         else:
             self.partial_dataset = torch.utils.data.ConcatDataset((self.partial_dataset, new_dataset))
+
+    def __repr__(self):
+        return "Oracle status @ remaining_dataset: {},    partial_dataset: {}".format(len(self.remaining_dataset), len(self.partial_dataset))
 
 
 def weighted_loss(n_classes, target, loss_each, reduction='mean'):
@@ -128,5 +137,7 @@ if __name__ == '__main__':
                                                           torchvision.transforms.Normalize(
                                                               (0.1307,), (0.3081,))
                                                           ]))
-    dataset = resize_dataset_and_pad(entire_train_dataset, small_dim=(7, 7), large_dim=(28, 28))
-    embedded_data = embed(entire_train_dataset.data, dataset.data)
+    oracle = Oracle(entire_train_dataset)
+    oracle.random_query(100)
+    # dataset = resize_dataset_and_pad(entire_train_dataset, small_dim=(7, 7), large_dim=(28, 28))
+    # embedded_data = embed(entire_train_dataset.data, dataset.data)
